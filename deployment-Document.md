@@ -219,7 +219,7 @@ If AKS cannot pull images directly from ACR, create a Docker Registry Secret.
 Retrieve ACR credentials.
 
 ```bash
-az acr credential show --name invintelligence
+az acr credential show --name invintelligence535
 ```
 
 Create secret.
@@ -246,7 +246,7 @@ Create deployment.
 ```bash
 kubectl create deployment invint --image=invintelligence.azurecr.io/invint:v1
 ```
-
+wh
 Verify deployment.
 
 ```bash
