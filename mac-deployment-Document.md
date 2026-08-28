@@ -4,6 +4,8 @@ This is a corrected version of `deployment-Document.md`, based on what actually 
 this app from an Apple Silicon (arm64) Mac to AKS. It covers everything up to exposing the app
 publicly — it does not cover production hardening.
 
+Always follow this guide for the mac deployment locally
+
 Deployment Flow:
 
 ```text
