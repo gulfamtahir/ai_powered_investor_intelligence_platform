@@ -4,6 +4,8 @@ This is a corrected version of `deployment-Document.md`, based on what actually 
 this app from an Apple Silicon (arm64) Mac to AKS. It covers everything up to exposing the app
 publicly — it does not cover production hardening.
 
+Always follow this guide for the mac deployment locally
+
 Deployment Flow:
 
 ```text
@@ -278,7 +280,101 @@ re-run `kubectl get svc` until an IP appears. The app is then reachable at `http
 
 ---
 
-# Rolling Out a New Image Version
+# CI/CD Setup (GitHub Actions)
+
+Steps 1–12 above are all manual. Once this is working, the same build → push → deploy chain can
+be automated with GitHub Actions so a `git push` alone updates the live pod — no local `docker`
+or `kubectl` commands needed anymore for routine code changes.
+
+## Files
+
+```text
+k8s/deployment.yaml           # Deployment manifest (declarative version of Steps 6–9)
+k8s/service.yaml              # Service manifest (declarative version of Step 12)
+.github/workflows/deploy.yml  # The pipeline itself
+```
+
+`deployment.yaml`'s container needs `envFrom: secretRef: app-env` so it picks up the same Secret
+created in Step 9 — the pipeline does not create that Secret for you, it must already exist in the
+cluster.
+
+## GitHub Secrets Required
+
+Set these under repo Settings → Secrets and variables → Actions:
+
+```text
+AZURE_CREDENTIALS     # service principal JSON (see below)
+ACR_NAME              # invintelligence535
+ACR_LOGIN_SERVER      # invintelligence535.azurecr.io
+AKS_RESOURCE_GROUP    # rg-inv-intelligence
+AKS_CLUSTER_NAME      # inv-intelligence-aks
+```
+
+Generate `AZURE_CREDENTIALS`:
+
+```bash
+az ad sp create-for-rbac --name "github-actions-invint" --role contributor \
+  --scopes /subscriptions/<subscription-id>/resourceGroups/rg-inv-intelligence \
+  --sdk-auth
+```
+
+Copy the **entire raw JSON output** (starts with `{`, ends with `}`) into the secret exactly as
+printed — don't retype or reformat it. A malformed/partial paste causes:
+
+```text
+Error: Login failed with SyntaxError: Expected double-quoted property name in JSON ...
+```
+
+## Trigger
+
+The pipeline runs on every push to whatever branch is listed in `deploy.yml`:
+
+```yaml
+on:
+  push:
+    branches:
+      - cicd
+```
+
+This still deploys to the **same real, live cluster** — branch name only controls when the
+pipeline fires, not which cluster it targets. There is no separate "test" cluster per branch.
+
+## One-Time Gotcha: Switching From Manual to CI/CD-Managed Deployment
+
+If the deployment already exists from the manual steps above (created imperatively via
+`kubectl create deployment`), the first `kubectl apply -f k8s/deployment.yaml` from the pipeline
+will NOT cleanly replace it. `kubectl apply` can only reconcile against changes it has previously
+tracked; since the imperative `create` never recorded that history, apply just adds the YAML's
+container alongside the old one instead of replacing it — leaving two containers with different
+names (e.g. `invint` and `investor-intelligence-platform`) inside the same pod, both trying to
+bind port 8000. Symptoms:
+
+```text
+kubectl get pods
+NAME                      READY   STATUS   RESTARTS
+invint-xxxxxxxxxx-yyyyy   1/2     Error    N
+
+kubectl logs <pod-name>
+ERROR: [Errno 98] error while attempting to bind on address ('0.0.0.0', 8000): [errno 98] address already in use
+```
+
+Fix once, before or right after the first CI/CD run:
+
+```bash
+kubectl delete deployment invint
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+```
+
+After this one-time reset, the deployment is fully `apply`-managed, and every future pipeline run
+updates the same single container in place — this will not recur.
+
+---
+
+# Rolling Out a New Image Version (Manual Method)
+
+Superseded by the CI/CD pipeline above for routine changes — kept here for manual/emergency
+redeploys.
 
 Because Kubernetes does not repull an already-used tag, always build with a **new tag** (`v2`,
 `v3`, ...) when pushing an update:
@@ -322,6 +418,11 @@ az acr repository delete --name invintelligence535 --image investor-intelligence
    firewall rule for the AKS outbound IP (Step 7). Diagnosed by comparing
    `az aks show ... effectiveOutboundIPs` against
    `az postgres flexible-server firewall-rule list`.
+5. **Duplicate container after switching to CI/CD** — the deployment had been created manually
+   with `kubectl create deployment` (imperative), then the pipeline's `kubectl apply` (declarative)
+   couldn't tell the old container should be removed, so it added a second one instead. Both
+   containers tried to bind port 8000 in the same pod → `1/2 Ready`, `CrashLoopBackOff`. Fixed with
+   a one-time `kubectl delete deployment invint` before letting `apply` manage it going forward.
 
 ---
 
